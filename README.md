@@ -12,8 +12,9 @@ Jessica posts weekly menus to her [website](https://www.howsweeteats.com), and w
     1. Save the token the botfather gives you to the `TELEGRAM_BOT_TOKEN` envvar.
 
 ## Usage notes
-- Jessica posts the weekly recipes every Sunday, so run the script as a cron job every Sunday night
-- The weekly recipes follow a procedurally generated URL: (strftime) `https://www.howsweeteats.com/%Y/%m/what-to-eat-this-week-%-m-%-d-%y/` but that may change in the future
+- Jessica posts the weekly recipes every Sunday, so run the script as a cron job every Sunday night:
+    - `0 21 * * 0 <path_to_repo>/.venv/bin/python <path_to_repo>/howsweeteats_scraper.py >> <path_to_repo>/logs.txt 2>&1`
+- The weekly recipes follow a procedurally generated URL: (strftime) `https://www.howsweeteats.com/%Y/%m/what-to-eat-this-week-%-m-%-d-%y/` but that may change in the future.
 
 ## Known Issues / TODO
 - Jessica will reuse recipes in her weekly menus, and this script may create duplicate recipes in paprika... not sure yet.

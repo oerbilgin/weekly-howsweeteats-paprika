@@ -84,12 +84,17 @@ def get_recipe_data(a: Tag) -> Recipe:
         raise RecipeException(f"Element {a} had no 'href' attribute!")
 
 
-def get_recipes(url: str) -> list[Recipe]:
+def _try_url(url: str) -> requests.Response:
     r = requests.get(url, headers=HEADERS)
     try:
         r.raise_for_status()
     except Exception as e:
         raise RecipeException(f"Got a bad response code for url '{url}'!") from e
+    return r
+
+
+def get_recipes(url: str) -> list[Recipe]:
+    r = _try_url(url)
 
     soup = BeautifulSoup(r.text, "html.parser")
     div = soup.find("div", class_="post-content")
@@ -102,14 +107,14 @@ def get_recipes(url: str) -> list[Recipe]:
         raise RecipeException(f"Could not find a div with class 'post-content'!")
 
 
-def write_recipes_json(my_recipes: list[Recipe]) -> str:
+def write_recipes_json(my_recipes: list[Recipe]) -> Path:
     """writes all the recipes for the week into json files and zips them"""
     date = datetime.now().strftime("%Y-%m-%d")
 
     filename = Path(f"./recipes/{date}.paprikarecipes")
     filename.parent.mkdir(parents=True, exist_ok=True)
 
-    with zipfile.ZipFile(filename, "w", zipfile.ZIP_DEFLATED) as zipf:
+    with zipfile.ZipFile(filename.absolute(), "w", zipfile.ZIP_DEFLATED) as zipf:
         for recipe in my_recipes:
             to_save = {
                 "name": recipe.name,
@@ -130,7 +135,7 @@ def write_recipes_json(my_recipes: list[Recipe]) -> str:
 
 
 def send_via_telegram(
-    date: str, filename: str, bot_token: str, chat_ids: list[int]
+    date: str, filename: Path, bot_token: str, chat_ids: list[int]
 ) -> None:
     """sends a file via telegram"""
     base_url = f"https://api.telegram.org/bot{bot_token}"
@@ -150,7 +155,7 @@ def send_via_telegram(
         # Telegram API endpoint for sending documents/files
         url = base_url + "/sendDocument"
 
-        with open(filename, "rb") as file:
+        with open(filename.absolute(), "rb") as file:
             files = {"document": file}
             response = requests.post(url, data=payload, files=files)
 
@@ -170,7 +175,45 @@ def parse_args():
     )
     parser.add_argument("--debug", action="store_true")
 
+    parser.add_argument("--dry", action="store_true")
+
     return parser.parse_args()
+
+
+def get_latest_post_url_from_index(url: str) -> str:
+    r = _try_url(url)
+    soup = BeautifulSoup(r.text, "html.parser")
+    div = soup.find("div", class_="archive-post")
+    if not div:
+        raise RecipeException(
+            f"Could not find the div `archive-post` in the url '{url}'!"
+        )
+
+    first_a = div.find("a")
+    if not first_a:
+        raise RecipeException(
+            f"Could not find any `a` elements in in the `archive-post` div in the url '{url}'!"
+        )
+
+    post_url = first_a.get("href")
+    if not isinstance(post_url, str):
+        raise RecipeException(
+            f"The 'href' attribute was a '{type(post_url)}' not a string: {post_url}"
+        )
+
+    return post_url
+
+
+def construct_url(dt: datetime | None) -> str:
+    base_url = "https://www.howsweeteats.com/"
+    if dt is not None:
+        route = dt.strftime("%Y/%m/what-to-eat-this-week-%-m-%-d-%y/")
+        url = base_url + route
+    else:
+        # infer from the what to eat this week page
+        index_url = base_url + "what-to-eat-this-week/"
+        url = get_latest_post_url_from_index(index_url)
+    return url
 
 
 def main() -> None:
@@ -195,39 +238,45 @@ def main() -> None:
                     f"The input date '{args.date}' does not match the format YYYY-MM-DD"
                 )
                 return
+            date = dt.strftime("%Y-%m-%d")
         else:
-            dt = datetime.now()
+            dt = None
+            # today's date
+            date = datetime.now().strftime("%Y-%m-%d")
 
-        date = dt.strftime("%Y-%m-%d")
+        logger.debug(f"`dt`: {dt}, `date`: {date}")
 
-        if dt.weekday() != 6:
-            logger.error(
-                f"The date '{date}' is not a Sunday, it is a {dt.strftime('%A')}!"
-            )
-            return
-
-        base_url = "https://www.howsweeteats.com/"
-        route = dt.strftime("%Y/%m/what-to-eat-this-week-%-m-%-d-%y/")
-        url = base_url + route
+        url = construct_url(dt)
 
         if not CHAT_IDS:
-            raise EnvironmentError(
+            raise OSError(
                 f"TELEGRAM_IDS parsed into an empty list: '{os.getenv('TELEGRAM_IDS')}'"
             )
         else:
             chat_id_list = [int(x) for x in CHAT_IDS.split(",")]
         if not BOT_TOKEN:
-            raise EnvironmentError(f"BOT_TOKEN must be specified in the environment!")
+            raise OSError("BOT_TOKEN must be specified in the environment!")
 
+        logger.info(f"Scraping recipes from url: '{url}'")
         my_recipes = get_recipes(url)
-        filename = write_recipes_json(my_recipes)
+        logger.info(f"Got {len(my_recipes)} recipes.")
 
-        send_via_telegram(
-            date=date,
-            filename=filename,
-            bot_token=BOT_TOKEN,
-            chat_ids=chat_id_list,
-        )
+        filename = write_recipes_json(my_recipes)
+        logger.debug(f"`filename`: {filename}")
+
+        if args.dry:
+            logger.info("Dry run, so not sending to telegram. Recipes:")
+            for r in my_recipes:
+                logger.info(r.name)
+                logger.debug(r)
+        else:
+            logger.info("Sending via Telegram")
+            send_via_telegram(
+                date=date,
+                filename=filename,
+                bot_token=BOT_TOKEN,
+                chat_ids=chat_id_list,
+            )
         logger.info("Recipe scrape finished.")
     except Exception:
         logger.exception("Uncaught exception when running the scraper.")
